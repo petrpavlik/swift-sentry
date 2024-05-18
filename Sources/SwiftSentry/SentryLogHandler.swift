@@ -66,21 +66,28 @@ public struct SentryLogHandler: LogHandler {
                         try? attachment.toEnvelopeItem(),
                     ].compactMap { $0 }
                 )
-                sentry.capture(envelope: envelope)
+                
+                Task {
+                    try await sentry.capture(envelope: envelope)
+                }
+                
                 return
             } catch {}
         }
-        sentry.capture(
-            message: message.description,
-            level: Level(from: level),
-            logger: source,
-            transaction: metadataEscaped["transaction"]?.description,
-            tags: tags.isEmpty ? nil : tags,
-            file: file,
-            filePath: nil,
-            function: function,
-            line: Int(line),
-            column: nil
-        )
+        
+        Task {
+            try await sentry.capture(
+                message: message.description,
+                level: Level(from: level),
+                logger: source,
+                transaction: metadataEscaped["transaction"]?.description,
+                tags: tags.isEmpty ? nil : tags,
+                file: file,
+                filePath: nil,
+                function: function,
+                line: Int(line),
+                column: nil
+            )
+        }
     }
 }

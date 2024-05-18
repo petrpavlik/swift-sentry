@@ -11,10 +11,11 @@ public final class Sentry {
         case InvalidArgumentException(_ msg: String)
     }
 
-    internal static let VERSION = "SentrySwift/0.1.0"
+    internal static let VERSION = "SentrySwift/1.0.0"
 
     private let dsn: Dsn
     private var httpClient: HTTPClient
+    private let isUsingCustomHttpClient: Bool
     internal var servername: String?
     internal var release: String?
     internal var environment: String?
@@ -28,23 +29,36 @@ public final class Sentry {
     internal static let maxEventAndTransaction = 1_000_000
     internal static let maxSessionsPerEnvelope = 100
     internal static let maxSessionBucketPerSessions = 100
+    
+    internal static let maxRequestTime: TimeAmount = .seconds(30)
+    internal static let maxResponseSize = 1024 * 1024
 
     public init(
         dsn: String,
-        httpClient: HTTPClient = HTTPClient(eventLoopGroupProvider: .createNew),
+        httpClient: HTTPClient? = nil,
         servername: String? = getHostname(),
         release: String? = nil,
         environment: String? = nil
     ) throws {
         self.dsn = try Dsn(fromString: dsn)
-        self.httpClient = httpClient
+        
+        if let httpClient {
+            self.httpClient = httpClient
+            self.isUsingCustomHttpClient = true
+        } else {
+            self.httpClient = HTTPClient(eventLoopGroupProvider: .singleton)
+            self.isUsingCustomHttpClient = false
+        }
+        
         self.servername = servername
         self.release = release
         self.environment = environment
     }
 
-    public func shutdown() throws {
-        try httpClient.syncShutdown()
+    public func shutdown() async throws {
+        if isUsingCustomHttpClient == false {
+            try await httpClient.shutdown()
+        }
     }
 
     /// Get hostname from linux C function `gethostname`. The integrated function `ProcessInfo.processInfo.hostName` does not seem to work reliable on linux
@@ -61,7 +75,7 @@ public final class Sentry {
     }
 
     @discardableResult
-    public func capture(error: Error, eventLoop: EventLoop? = nil) -> EventLoopFuture<UUID> {
+    public func capture(error: Error, eventLoop: EventLoop? = nil) async throws -> UUID {
         let edb = ExceptionDataBag(
             type: error.localizedDescription,
             value: nil,
@@ -86,7 +100,7 @@ public final class Sentry {
             user: nil
         )
 
-        return send(event: event, eventLoop: eventLoop)
+        return try await send(event: event)
     }
 
     /// Log a message to sentry
@@ -101,9 +115,8 @@ public final class Sentry {
         filePath: String? = #filePath,
         function: String? = #function,
         line: Int? = #line,
-        column: Int? = #column,
-        eventLoop: EventLoop? = nil
-    ) -> EventLoopFuture<UUID> {
+        column: Int? = #column
+    ) async throws -> UUID {
         let frame = Frame(filename: file, function: function, raw_function: nil, lineno: line, colno: column, abs_path: filePath, instruction_addr: nil)
         let stacktrace = Stacktrace(frames: [frame])
 
@@ -123,24 +136,22 @@ public final class Sentry {
             user: nil
         )
 
-        return send(event: event, eventLoop: eventLoop)
+        return try await send(event: event)
     }
 
     @discardableResult
     public func capture(
-        envelope: Envelope,
-        eventLoop: EventLoop? = nil
-    ) -> EventLoopFuture<UUID> {
-        return send(envelope: envelope, eventLoop: eventLoop)
+        envelope: Envelope
+    ) async throws -> UUID {
+        try await send(envelope: envelope)
     }
 
     @discardableResult
-    public func uploadStackTrace(path: String, eventLoop: EventLoop? = nil) throws -> EventLoopFuture<[UUID]> {
-        let eventLoop = eventLoop ?? httpClient.eventLoopGroup.next()
+    public func uploadStackTrace(path: String)  async throws -> [UUID] {
 
         // read all lines from the error log
         guard let content = try? String(contentsOfFile: path) else {
-            return eventLoop.makeSucceededFuture([UUID]())
+            return [UUID]()
         }
 
         // empty the error log (we don't want to send events twice)
@@ -149,8 +160,15 @@ public final class Sentry {
         let events = FatalError.parseStacktrace(content).map {
             $0.getEvent(servername: servername, release: release, environment: environment)
         }
+        
+        var ids = [UUID]()
+        
+        for event in events {
+            let id = try await send(event: event)
+            ids.append(id)
+        }
 
-        return EventLoopFuture.whenAllSucceed(events.map { send(event: $0) }, on: eventLoop)
+        return ids
     }
 
     struct SentryUUIDResponse: Codable {
@@ -158,55 +176,51 @@ public final class Sentry {
     }
 
     @discardableResult
-    internal func send(event: Event, eventLoop: EventLoop? = nil) -> EventLoopFuture<UUID> {
-        let eventLoop = eventLoop ?? httpClient.eventLoopGroup.next()
+    internal func send(event: Event) async throws -> UUID {
 
-        do {
-            let data = try JSONEncoder().encode(event)
-            var request = try HTTPClient.Request(url: dsn.getStoreApiEndpointUrl(), method: .POST)
+        let data = try JSONEncoder().encode(event)
+        var request = HTTPClientRequest(url: dsn.getStoreApiEndpointUrl())
+        request.method = .POST
 
-            request.headers.replaceOrAdd(name: "Content-Type", value: "application/json")
-            request.headers.replaceOrAdd(name: "User-Agent", value: Sentry.VERSION)
-            request.headers.replaceOrAdd(name: "X-Sentry-Auth", value: dsn.getAuthHeader())
-            request.body = HTTPClient.Body.data(data)
+        request.headers.replaceOrAdd(name: "Content-Type", value: "application/json")
+        request.headers.replaceOrAdd(name: "User-Agent", value: Sentry.VERSION)
+        request.headers.replaceOrAdd(name: "X-Sentry-Auth", value: dsn.getAuthHeader())
+        request.body = .bytes(ByteBuffer(data: data))
+        
+        let response: HTTPClientResponse = try await httpClient.execute(request, timeout: Self.maxRequestTime)
+        
+        let body = try await response.body.collect(upTo: Self.maxResponseSize)
 
-            return httpClient.execute(request: request, eventLoop: .delegate(on: eventLoop)).flatMapThrowing { resp -> UUID in
-                guard let body = resp.body,
-                      let decodable = try body.getJSONDecodable(SentryUUIDResponse.self, at: 0, length: body.readableBytes),
-                      let id = UUID(fromHexadecimalEncodedString: decodable.id)
-                else {
-                    throw SwiftSentryError.NoResponseBody(status: resp.status.code)
-                }
-                return id
-            }
-        } catch {
-            return eventLoop.makeFailedFuture(error)
+        guard let decodable = try body.getJSONDecodable(SentryUUIDResponse.self, at: 0, length: body.readableBytes),
+              let id = UUID(fromHexadecimalEncodedString: decodable.id)
+        else {
+            throw SwiftSentryError.NoResponseBody(status: response.status.code)
         }
+        
+        return id
     }
 
     @discardableResult
-    internal func send(envelope: Envelope, eventLoop: EventLoop? = nil) -> EventLoopFuture<UUID> {
-        let eventLoop = eventLoop ?? httpClient.eventLoopGroup.next()
+    internal func send(envelope: Envelope) async throws -> UUID {
 
-        do {
-            var request = try HTTPClient.Request(url: dsn.getEnvelopeApiEndpointUrl(), method: .POST)
+        var request = HTTPClientRequest(url: dsn.getEnvelopeApiEndpointUrl())
+        request.method = .POST
 
-            request.headers.replaceOrAdd(name: "Content-Type", value: "application/x-sentry-envelope")
-            request.headers.replaceOrAdd(name: "User-Agent", value: Sentry.VERSION)
-            request.headers.replaceOrAdd(name: "X-Sentry-Auth", value: dsn.getAuthHeader())
-            request.body = HTTPClient.Body.data(try envelope.dump(encoder: JSONEncoder()))
-
-            return httpClient.execute(request: request, eventLoop: .delegate(on: eventLoop)).flatMapThrowing { resp -> UUID in
-                guard let body = resp.body,
-                      let decodable = try body.getJSONDecodable(SentryUUIDResponse.self, at: 0, length: body.readableBytes),
-                      let id = UUID(fromHexadecimalEncodedString: decodable.id)
-                else {
-                    throw SwiftSentryError.NoResponseBody(status: resp.status.code)
-                }
-                return id
-            }
-        } catch {
-            return eventLoop.makeFailedFuture(error)
+        request.headers.replaceOrAdd(name: "Content-Type", value: "application/x-sentry-envelope")
+        request.headers.replaceOrAdd(name: "User-Agent", value: Sentry.VERSION)
+        request.headers.replaceOrAdd(name: "X-Sentry-Auth", value: dsn.getAuthHeader())
+        request.body = .bytes(ByteBuffer(data: try envelope.dump(encoder: JSONEncoder())))
+        
+        let response: HTTPClientResponse = try await httpClient.execute(request, timeout: Self.maxRequestTime)
+        
+        let body = try await response.body.collect(upTo: Self.maxResponseSize)
+                
+        guard let decodable = try body.getJSONDecodable(SentryUUIDResponse.self, at: 0, length: body.readableBytes),
+              let id = UUID(fromHexadecimalEncodedString: decodable.id)
+        else {
+            throw SwiftSentryError.NoResponseBody(status: response.status.code)
         }
+        
+        return id
     }
 }
