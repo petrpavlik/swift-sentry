@@ -3,7 +3,7 @@ import Foundation
 import NIO
 import NIOFoundationCompat
 
-public final class Sentry {
+public final class Sentry: Sendable {
     enum SwiftSentryError: Error {
         // case CantEncodeEvent
         // case CantCreateRequest
@@ -14,11 +14,11 @@ public final class Sentry {
     internal static let VERSION = "SentrySwift/1.0.0"
 
     private let dsn: Dsn
-    private var httpClient: HTTPClient
+    private let httpClient: HTTPClient
     private let isUsingCustomHttpClient: Bool
-    internal var servername: String?
-    internal var release: String?
-    internal var environment: String?
+    internal let servername: String?
+    internal let release: String?
+    internal let environment: String?
     // This one can be changed, it's merely the default value
     internal static var maxAttachmentSize = 20_971_520
     // These ones are set by Sentry
@@ -75,7 +75,7 @@ public final class Sentry {
     }
 
     @discardableResult
-    public func capture(error: Error, eventLoop: EventLoop? = nil) async throws -> UUID {
+    public func capture(error: Error) async throws -> UUID {
         let edb = ExceptionDataBag(
             type: error.localizedDescription,
             value: nil,
