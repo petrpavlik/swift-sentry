@@ -15,7 +15,7 @@ public func evalMetadata(metadata: Logger.Metadata, attachmentKey: String?) -> A
     return nil
 }
 
-/// Construct an Envent, encode it to JSONData, return that data
+/// Construct an Event, encode it to JSONData, return that data
 public func makeEventData(
     message: String,
     level: Level,
@@ -29,18 +29,25 @@ public func makeEventData(
     filePath: String? = #filePath,
     file: String? = #file,
     function: String? = #function,
-    line: Int? = #line
+    line: Int? = #line,
+    stackTrace: Stacktrace? = nil
 ) throws -> Data {
-    let frame = Frame(
-        filename: file,
-        function: function,
-        raw_function: nil,
-        lineno: line,
-        colno: nil,
-        abs_path: filePath,
-        instruction_addr: nil
-    )
-    let stacktrace = Stacktrace(frames: [frame])
+    let stacktrace: Stacktrace
+    if let providedStacktrace = stackTrace {
+        stacktrace = providedStacktrace
+    } else {
+        let frame = Frame(
+            filename: file,
+            function: function,
+            raw_function: nil,
+            lineno: line,
+            colno: nil,
+            abs_path: filePath,
+            instruction_addr: nil
+        )
+        stacktrace = Stacktrace(frames: [frame])
+    }
+    
     return try JSONEncoder().encode(
         Event(
             event_id: uid,

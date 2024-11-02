@@ -18,7 +18,9 @@ let package = Package(
         // Dependencies declare other packages that this package depends on.
         .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
         // HTTP client library built on SwiftNIO
-        .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.2.0")
+        .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.2.0"),
+        // Swift Backtrace for Linux stack traces
+        .package(url: "https://github.com/swift-server/swift-backtrace.git", from: "1.3.3")
     ],
     targets: [
         // Targets are the basic building blocks of a package. A target can define a module or a test suite.
@@ -27,7 +29,8 @@ let package = Package(
             name: "SwiftSentry",
             dependencies: [
                 .product(name: "Logging", package: "swift-log"),
-                .product(name: "AsyncHTTPClient", package: "async-http-client")
+                .product(name: "AsyncHTTPClient", package: "async-http-client"),
+                .product(name: "Backtrace", package: "swift-backtrace", condition: .when(platforms: [.linux]))
             ]),
         .testTarget(
             name: "SwiftSentryTests",

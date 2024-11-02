@@ -5,8 +5,6 @@ import NIOFoundationCompat
 
 public final class Sentry: Sendable {
     enum SwiftSentryError: Error {
-        // case CantEncodeEvent
-        // case CantCreateRequest
         case NoResponseBody(status: UInt)
         case InvalidArgumentException(_ msg: String)
     }
@@ -61,7 +59,6 @@ public final class Sentry: Sendable {
         }
     }
 
-    /// Get hostname from linux C function `gethostname`. The integrated function `ProcessInfo.processInfo.hostName` does not seem to work reliable on linux
     public static func getHostname() -> String {
         var data = [CChar](repeating: 0, count: 265)
         let string: String? = data.withUnsafeMutableBufferPointer {
@@ -76,10 +73,15 @@ public final class Sentry: Sendable {
 
     @discardableResult
     public func capture(error: Error) async throws -> UUID {
+        let stackTrace = StackTrace.capture(skip: 1)
+        let sentryStacktrace = stackTrace.map { trace in
+            convertToSentryStacktrace(trace)
+        }
+        
         let edb = ExceptionDataBag(
             type: error.localizedDescription,
             value: nil,
-            stacktrace: nil
+            stacktrace: sentryStacktrace
         )
 
         let exceptions = Exceptions(values: [edb])
@@ -103,7 +105,24 @@ public final class Sentry: Sendable {
         return try await send(event: event)
     }
 
-    /// Log a message to sentry
+    private func convertToSentryStacktrace(_ stackTrace: StackTrace) -> Stacktrace {
+        let frames = stackTrace.frames.map { frame -> Frame in
+            let components = frame.file.components(separatedBy: "/")
+            let filename = components.last ?? frame.file
+            
+            return Frame(
+                filename: filename,
+                function: frame.function,
+                raw_function: frame.function,
+                lineno: nil,
+                colno: nil,
+                abs_path: frame.file,
+                instruction_addr: nil
+            )
+        }
+        return Stacktrace(frames: frames)
+    }
+
     @discardableResult
     public func capture(
         message: String,
@@ -115,10 +134,11 @@ public final class Sentry: Sendable {
         filePath: String? = #filePath,
         function: String? = #function,
         line: Int? = #line,
-        column: Int? = #column
+        column: Int? = #column,
+        stackTrace: Stacktrace? = nil
     ) async throws -> UUID {
         let frame = Frame(filename: file, function: function, raw_function: nil, lineno: line, colno: column, abs_path: filePath, instruction_addr: nil)
-        let stacktrace = Stacktrace(frames: [frame])
+        let stacktrace = stackTrace ?? Stacktrace(frames: [frame])
 
         let event = Event(
             event_id: UUID(),
@@ -148,13 +168,10 @@ public final class Sentry: Sendable {
 
     @discardableResult
     public func uploadStackTrace(path: String)  async throws -> [UUID] {
-
-        // read all lines from the error log
         guard let content = try? String(contentsOfFile: path) else {
             return [UUID]()
         }
 
-        // empty the error log (we don't want to send events twice)
         try "".write(toFile: path, atomically: true, encoding: .utf8)
 
         let events = FatalError.parseStacktrace(content).map {
@@ -177,7 +194,6 @@ public final class Sentry: Sendable {
 
     @discardableResult
     internal func send(event: Event) async throws -> UUID {
-
         let data = try JSONEncoder().encode(event)
         var request = HTTPClientRequest(url: dsn.getStoreApiEndpointUrl())
         request.method = .POST
@@ -202,7 +218,6 @@ public final class Sentry: Sendable {
 
     @discardableResult
     internal func send(envelope: Envelope) async throws -> UUID {
-
         var request = HTTPClientRequest(url: dsn.getEnvelopeApiEndpointUrl())
         request.method = .POST
 
