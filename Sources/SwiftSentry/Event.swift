@@ -116,33 +116,33 @@ struct ExceptionDataBag: Encodable {
     let stacktrace: Stacktrace?
 }
 
-struct Stacktrace: Encodable, Equatable {
+public struct Stacktrace: Encodable, Equatable {
     /// A non-empty list of stack frames. The list is ordered from caller to callee, or oldest to youngest. The last frame is the one creating the exception.
-    let frames: [Frame]
+    public let frames: [Frame]
 }
 
-struct Frame: Encodable, Equatable {
+public struct Frame: Encodable, Equatable {
     /// The source file name (basename only).
-    let filename: String?
+    public let filename: String?
 
     /// Name of the frame's function. This might include the name of a class.
     /// This function name may be shortened or demangled. If not, Sentry will demangle and shorten it for some platforms. The original function name will be stored in `raw_function`.
-    let function: String?
+    public let function: String?
 
     /// A raw (but potentially truncated) function value.
-    let raw_function: String?
+    public let raw_function: String?
 
     /// Line number within the source file, starting at 1.
-    let lineno: Int?
+    public let lineno: Int?
 
     /// Column number within the source file, starting at 1.
-    let colno: Int?
+    public let colno: Int?
 
     /// Absolute path to the source file.
-    let abs_path: String?
+    public let abs_path: String?
 
     /// An optional instruction address for symbolication. This should be a string with a hexadecimal number that includes a `0x` prefix. If this is set and a known image is defined in the Debug Meta Interface, then symbolication can take place.
-    let instruction_addr: String?
+    public let instruction_addr: String?
 }
 
 struct Breadcrumbs: Encodable {
