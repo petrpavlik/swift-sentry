@@ -105,7 +105,8 @@ public struct EnvelopeHeader: Encodable {
         if let sdk = sdk {
             try container.encode(sdk, forKey: CodingKeys.sdk)
         }
-        try container.encode(EnvelopeHeader.RFC3339DateFormatter.string(from: Date()), forKey: CodingKeys.sentAt)
+        try container.encode(
+            EnvelopeHeader.RFC3339DateFormatter.string(from: Date()), forKey: CodingKeys.sentAt)
     }
 }
 
@@ -146,13 +147,17 @@ public struct EnvelopeItem {
     }
 
     public func dump(encoder: JSONEncoder) throws -> Data {
-        let returnData = try encoder.encode(header) + NewlineData.newlineData + data + NewlineData.newlineData
+        let returnData =
+            try encoder.encode(header) + NewlineData.newlineData + data + NewlineData.newlineData
         guard header.type != "attachment" || returnData.count <= Sentry.maxEachAtachment else {
             throw EnvelopeItemError.attachmentToLarge(
                 size: UInt64(returnData.count)
             )
         }
-        guard (header.type != "event" && header.type != "transaction") || (returnData.count <= Sentry.maxEventAndTransaction) else {
+        guard
+            (header.type != "event" && header.type != "transaction")
+                || (returnData.count <= Sentry.maxEventAndTransaction)
+        else {
             throw EnvelopeItemError.eventOrTransactionToLarge(size: UInt64(returnData.count))
         }
         return returnData
@@ -177,9 +182,9 @@ public struct Attachment: CustomStringConvertible {
     }
     /// converts the Attachment to an EnvelopeItem
     /// if the Attachment is a FileAttachment, the file gets read at this point
-    public func toEnvelopeItem() throws -> EnvelopeItem {
+    public func toEnvelopeItem(maxAttachmentSize: Int) throws -> EnvelopeItem {
         var tempData = try payload.dump()
-        if tempData.count > Sentry.maxAttachmentSize {
+        if tempData.count > maxAttachmentSize {
             tempData.removeAll()
         }
         return EnvelopeItem(
@@ -200,7 +205,9 @@ public struct Attachment: CustomStringConvertible {
     }
     /// Constructs an Attachment from a file on disk, if no filename is given, one gets
     /// inferred from path
-    public init(path: String, filename: String? = nil, contentType: String = Attachment.defaultContentType) throws {
+    public init(
+        path: String, filename: String? = nil, contentType: String = Attachment.defaultContentType
+    ) throws {
         var path = path
         if let filename = filename {
             self.filename = filename
@@ -217,7 +224,9 @@ public struct Attachment: CustomStringConvertible {
         self.contentType = contentType
     }
     /// Contructs an Attachment from a file on disk, without inferring the filename
-    public init(path: String? = nil, filename: String, contentType: String = Attachment.defaultContentType) {
+    public init(
+        path: String? = nil, filename: String, contentType: String = Attachment.defaultContentType
+    ) {
         self.filename = filename
         payload = .fromFile(path, filename)
         self.contentType = contentType

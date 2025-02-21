@@ -19,8 +19,7 @@ public final class Sentry: Sendable {
     internal let servername: String?
     internal let release: String?
     internal let environment: String?
-    // This one can be changed, it's merely the default value
-    internal static var maxAttachmentSize = 20_971_520
+    internal let maxAttachmentSize: Int
     // These ones are set by Sentry
     internal static let maxEnvelopeCompressedSize = 20_000_000
     internal static let maxEnvelopeUncompressedSize = 100_000_000
@@ -29,19 +28,35 @@ public final class Sentry: Sendable {
     internal static let maxEventAndTransaction = 1_000_000
     internal static let maxSessionsPerEnvelope = 100
     internal static let maxSessionBucketPerSessions = 100
-    
+
     internal static let maxRequestTime: TimeAmount = .seconds(30)
     internal static let maxResponseSize = 1024 * 1024
+
+    private let beforeSend: (@Sendable (Event) -> Event?)?
+    private let sampleRate: Double
 
     public init(
         dsn: String,
         httpClient: HTTPClient? = nil,
         servername: String? = getHostname(),
         release: String? = nil,
-        environment: String? = nil
+        environment: String? = nil,
+        maxAttachmentSize: Int = 20_971_520,
+        /// The sample rate to apply to events. A value of 0.0 will deny sending events, and 1.0 will send all events.
+        sampleRate: Double = 1.0,
+        /// This function is called before sending the event. If it returns nil, the event will not be sent.
+        beforeSend: (@Sendable (Event) -> Event?)? = nil
     ) throws {
         self.dsn = try Dsn(fromString: dsn)
-        
+        self.maxAttachmentSize = maxAttachmentSize
+        self.beforeSend = beforeSend
+
+        guard sampleRate >= 0.0 && sampleRate <= 1.0 else {
+            throw SwiftSentryError.InvalidArgumentException(
+                "sampleRate must be between 0.0 and 1.0")
+        }
+        self.sampleRate = sampleRate
+
         if let httpClient {
             self.httpClient = httpClient
             self.isUsingCustomHttpClient = true
@@ -49,7 +64,7 @@ public final class Sentry: Sendable {
             self.httpClient = HTTPClient(eventLoopGroupProvider: .singleton)
             self.isUsingCustomHttpClient = false
         }
-        
+
         self.servername = servername
         self.release = release
         self.environment = environment
@@ -75,7 +90,7 @@ public final class Sentry: Sendable {
     }
 
     @discardableResult
-    public func capture(error: Error) async throws -> UUID {
+    public func capture(error: Error) async throws -> UUID? {
         let edb = ExceptionDataBag(
             type: error.localizedDescription,
             value: nil,
@@ -116,8 +131,10 @@ public final class Sentry: Sendable {
         function: String? = #function,
         line: Int? = #line,
         column: Int? = #column
-    ) async throws -> UUID {
-        let frame = Frame(filename: file, function: function, raw_function: nil, lineno: line, colno: column, abs_path: filePath, instruction_addr: nil)
+    ) async throws -> UUID? {
+        let frame = Frame(
+            filename: file, function: function, raw_function: nil, lineno: line, colno: column,
+            abs_path: filePath, instruction_addr: nil)
         let stacktrace = Stacktrace(frames: [frame])
 
         let event = Event(
@@ -131,7 +148,9 @@ public final class Sentry: Sendable {
             tags: tags,
             environment: environment,
             message: .raw(message: message),
-            exception: Exceptions(values: [ExceptionDataBag(type: message, value: nil, stacktrace: stacktrace)]),
+            exception: Exceptions(values: [
+                ExceptionDataBag(type: message, value: nil, stacktrace: stacktrace)
+            ]),
             breadcrumbs: nil,
             user: nil
         )
@@ -147,7 +166,7 @@ public final class Sentry: Sendable {
     }
 
     @discardableResult
-    public func uploadStackTrace(path: String)  async throws -> [UUID] {
+    public func uploadStackTrace(path: String) async throws -> [UUID] {
 
         // read all lines from the error log
         guard let content = try? String(contentsOfFile: path) else {
@@ -160,12 +179,13 @@ public final class Sentry: Sendable {
         let events = FatalError.parseStacktrace(content).map {
             $0.getEvent(servername: servername, release: release, environment: environment)
         }
-        
+
         var ids = [UUID]()
-        
+
         for event in events {
-            let id = try await send(event: event)
-            ids.append(id)
+            if let id = try await send(event: event) {
+                ids.append(id)
+            }
         }
 
         return ids
@@ -176,7 +196,26 @@ public final class Sentry: Sendable {
     }
 
     @discardableResult
-    internal func send(event: Event) async throws -> UUID {
+    internal func send(event: Event) async throws -> UUID? {
+
+        if sampleRate < 1.0 && Double.random(in: 0.0...1.0) > sampleRate {
+            return nil
+        }
+
+        var event = event
+
+        if let beforeSend {
+            guard let newEvent = beforeSend(event) else {
+                return nil
+            }
+            event = newEvent
+        }
+
+        // Don't perform actual network request when running the tests
+        // Ideally we would mock the HTTPClient, but nobody ain't got time for that
+        if environment == "sentry_private_tests" {
+            return .init()
+        }
 
         let data = try JSONEncoder().encode(event)
         var request = HTTPClientRequest(url: dsn.getStoreApiEndpointUrl())
@@ -186,17 +225,20 @@ public final class Sentry: Sendable {
         request.headers.replaceOrAdd(name: "User-Agent", value: Sentry.VERSION)
         request.headers.replaceOrAdd(name: "X-Sentry-Auth", value: dsn.getAuthHeader())
         request.body = .bytes(ByteBuffer(data: data))
-        
-        let response: HTTPClientResponse = try await httpClient.execute(request, timeout: Self.maxRequestTime)
-        
+
+        let response: HTTPClientResponse = try await httpClient.execute(
+            request, timeout: Self.maxRequestTime)
+
         let body = try await response.body.collect(upTo: Self.maxResponseSize)
 
-        guard let decodable = try body.getJSONDecodable(SentryUUIDResponse.self, at: 0, length: body.readableBytes),
-              let id = UUID(fromHexadecimalEncodedString: decodable.id)
+        guard
+            let decodable = try body.getJSONDecodable(
+                SentryUUIDResponse.self, at: 0, length: body.readableBytes),
+            let id = UUID(fromHexadecimalEncodedString: decodable.id)
         else {
             throw SwiftSentryError.NoResponseBody(status: response.status.code)
         }
-        
+
         return id
     }
 
@@ -210,17 +252,20 @@ public final class Sentry: Sendable {
         request.headers.replaceOrAdd(name: "User-Agent", value: Sentry.VERSION)
         request.headers.replaceOrAdd(name: "X-Sentry-Auth", value: dsn.getAuthHeader())
         request.body = .bytes(ByteBuffer(data: try envelope.dump(encoder: JSONEncoder())))
-        
-        let response: HTTPClientResponse = try await httpClient.execute(request, timeout: Self.maxRequestTime)
-        
+
+        let response: HTTPClientResponse = try await httpClient.execute(
+            request, timeout: Self.maxRequestTime)
+
         let body = try await response.body.collect(upTo: Self.maxResponseSize)
-                
-        guard let decodable = try body.getJSONDecodable(SentryUUIDResponse.self, at: 0, length: body.readableBytes),
-              let id = UUID(fromHexadecimalEncodedString: decodable.id)
+
+        guard
+            let decodable = try body.getJSONDecodable(
+                SentryUUIDResponse.self, at: 0, length: body.readableBytes),
+            let id = UUID(fromHexadecimalEncodedString: decodable.id)
         else {
             throw SwiftSentryError.NoResponseBody(status: response.status.code)
         }
-        
+
         return id
     }
 }

@@ -9,7 +9,6 @@ public struct SentryLogHandler: LogHandler {
     private let attachmentKey: String?
     public var metadataProvider: Logger.MetadataProvider?
 
-
     public subscript(metadataKey metadataKey: String) -> Logger.Metadata.Value? {
         get {
             metadata[metadataKey]
@@ -19,7 +18,9 @@ public struct SentryLogHandler: LogHandler {
         }
     }
 
-    public init(label: String, sentry: Sentry, level: Logger.Level, attachmentKey: String? = "Attachment") {
+    public init(
+        label: String, sentry: Sentry, level: Logger.Level, attachmentKey: String? = "Attachment"
+    ) {
         self.label = label
         self.sentry = sentry
         logLevel = level
@@ -35,12 +36,17 @@ public struct SentryLogHandler: LogHandler {
         function: String,
         line: UInt
     ) {
+
         let metadataEscaped = (metadata ?? [:])
             .merging(self.metadata, uniquingKeysWith: { a, _ in a })
             .merging(self.metadataProvider?.get() ?? [:], uniquingKeysWith: { (a, _) in a })
+
         let tags = metadataEscaped.mapValues { "\($0)" }
+
         if let attachment = evalMetadata(metadata: metadataEscaped, attachmentKey: attachmentKey) {
+
             let uid = UUID()
+
             do {
                 let eventData = try makeEventData(
                     message: message.description,
@@ -60,21 +66,22 @@ public struct SentryLogHandler: LogHandler {
                     header: .init(eventId: uid, dsn: nil, sdk: nil),
                     items: [
                         .init(
-                            header: .init(type: "event", filename: nil, contentType: "application/json"),
+                            header: .init(
+                                type: "event", filename: nil, contentType: "application/json"),
                             data: eventData
                         ),
-                        try? attachment.toEnvelopeItem(),
+                        try? attachment.toEnvelopeItem(maxAttachmentSize: sentry.maxAttachmentSize),
                     ].compactMap { $0 }
                 )
-                
+
                 Task {
                     try await sentry.capture(envelope: envelope)
                 }
-                
+
                 return
             } catch {}
         }
-        
+
         Task {
             try await sentry.capture(
                 message: message.description,

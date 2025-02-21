@@ -2,20 +2,27 @@ import Foundation
 import NIO
 
 @propertyWrapper
-struct UUIDHexadecimalEncoded {
-    let wrappedValue: UUID
+public struct UUIDHexadecimalEncoded {
+    public init(wrappedValue: UUID) {
+        self.wrappedValue = wrappedValue
+    }
+    public let wrappedValue: UUID
 }
 
 extension UUIDHexadecimalEncoded: Codable {
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         guard let id = UUID(fromHexadecimalEncodedString: try container.decode(String.self)) else {
-            throw DecodingError.typeMismatch(UUIDHexadecimalEncoded.self, DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "Expected UUID in hexadecimal format"))
+            throw DecodingError.typeMismatch(
+                UUIDHexadecimalEncoded.self,
+                DecodingError.Context(
+                    codingPath: decoder.codingPath,
+                    debugDescription: "Expected UUID in hexadecimal format"))
         }
         self.wrappedValue = id
     }
 
-    func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
         try container.encode(self.wrappedValue.hexadecimalEncoded)
     }
