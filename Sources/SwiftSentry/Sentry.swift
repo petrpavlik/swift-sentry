@@ -3,6 +3,22 @@ import Foundation
 import NIO
 import NIOFoundationCompat
 
+private actor RateLimiter {
+    private var rateLimitUntil: Date?
+
+    func isRateLimited(now: Date = .now) -> Bool {
+        guard let rateLimitUntil else {
+            return false
+        }
+
+        return rateLimitUntil > now
+    }
+
+    func rateLimit(until: Date) {
+        rateLimitUntil = until
+    }
+}
+
 public final class Sentry: Sendable {
     enum SwiftSentryError: Error {
         // case CantEncodeEvent
@@ -34,6 +50,8 @@ public final class Sentry: Sendable {
 
     private let beforeSend: (@Sendable (Event) -> Event?)?
     private let sampleRate: Double
+
+    private let rateLimiter = RateLimiter()
 
     public init(
         dsn: String,
@@ -161,7 +179,7 @@ public final class Sentry: Sendable {
     @discardableResult
     public func capture(
         envelope: Envelope
-    ) async throws -> UUID {
+    ) async throws -> UUID? {
         try await send(envelope: envelope)
     }
 
@@ -198,6 +216,10 @@ public final class Sentry: Sendable {
     @discardableResult
     internal func send(event: Event) async throws -> UUID? {
 
+        guard await rateLimiter.isRateLimited() == false else {
+            return nil
+        }
+
         if sampleRate < 1.0 && Double.random(in: 0.0...1.0) > sampleRate {
             return nil
         }
@@ -211,12 +233,6 @@ public final class Sentry: Sendable {
             event = newEvent
         }
 
-        // Don't perform actual network request when running the tests
-        // Ideally we would mock the HTTPClient, but nobody ain't got time for that
-        if environment == "sentry_private_tests" {
-            return .init()
-        }
-
         let data = try JSONEncoder().encode(event)
         var request = HTTPClientRequest(url: dsn.getStoreApiEndpointUrl())
         request.method = .POST
@@ -228,6 +244,8 @@ public final class Sentry: Sendable {
 
         let response: HTTPClientResponse = try await httpClient.execute(
             request, timeout: Self.maxRequestTime)
+
+        await updateRateLimiter(from: response)
 
         let body = try await response.body.collect(upTo: Self.maxResponseSize)
 
@@ -243,7 +261,17 @@ public final class Sentry: Sendable {
     }
 
     @discardableResult
-    internal func send(envelope: Envelope) async throws -> UUID {
+    internal func send(envelope: Envelope) async throws -> UUID? {
+
+        guard await rateLimiter.isRateLimited() == false else {
+            return nil
+        }
+
+        if sampleRate < 1.0 && Double.random(in: 0.0...1.0) > sampleRate {
+            return nil
+        }
+
+        // TODO: Trigger somehow beforeSend here?
 
         var request = HTTPClientRequest(url: dsn.getEnvelopeApiEndpointUrl())
         request.method = .POST
@@ -256,6 +284,8 @@ public final class Sentry: Sendable {
         let response: HTTPClientResponse = try await httpClient.execute(
             request, timeout: Self.maxRequestTime)
 
+        await updateRateLimiter(from: response)
+
         let body = try await response.body.collect(upTo: Self.maxResponseSize)
 
         guard
@@ -267,5 +297,18 @@ public final class Sentry: Sendable {
         }
 
         return id
+    }
+
+    private func updateRateLimiter(from response: HTTPClientResponse) async {
+        if response.status.code == 429 {
+            if let retryAfter = response.headers["Retry-After"].first,
+                let retryAfterInterval = TimeInterval(retryAfter)
+            {
+                await rateLimiter.rateLimit(until: Date().addingTimeInterval(retryAfterInterval))
+            } else {
+                // On 429 responses without the above headers, assume a 60s rate limit for all categories
+                await rateLimiter.rateLimit(until: Date().addingTimeInterval(60))
+            }
+        }
     }
 }

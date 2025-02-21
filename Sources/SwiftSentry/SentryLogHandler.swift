@@ -80,21 +80,21 @@ public struct SentryLogHandler: LogHandler {
 
                 return
             } catch {}
-        }
-
-        Task {
-            try await sentry.capture(
-                message: message.description,
-                level: Level(from: level),
-                logger: source,
-                transaction: metadataEscaped["transaction"]?.description,
-                tags: tags.isEmpty ? nil : tags,
-                file: file,
-                filePath: nil,
-                function: function,
-                line: Int(line),
-                column: nil
-            )
+        } else {
+            Task {
+                try await sentry.capture(
+                    message: message.description,
+                    level: Level(from: level),
+                    logger: source,
+                    transaction: metadataEscaped["transaction"]?.description,
+                    tags: tags.isEmpty ? nil : tags,
+                    file: file,
+                    filePath: nil,
+                    function: function,
+                    line: Int(line),
+                    column: nil
+                )
+            }
         }
     }
 }
