@@ -168,13 +168,33 @@ public struct Breadcrumb: Encodable {
     }
 }
 
-// Make User struct public
-public struct User: Encodable {
-    public let id: String
-    public let ip_address: String
+public struct User: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case email
+        case username
+        case ipAddress = "ip_address"
+    }
 
-    public init(id: String, ip_address: String) {
+    public var id: String?
+    public var name: String?
+    public var email: String?
+    public var username: String?
+    /// The user's IP address. Use `{{auto}}` to capture the default interface's IP address.
+    public var ipAddress: String?
+
+    public init(
+        id: String? = nil,
+        name: String? = nil,
+        email: String? = nil,
+        username: String? = nil,
+        ipAddress: String? = nil
+    ) {
         self.id = id
-        self.ip_address = ip_address
+        self.name = name
+        self.email = email
+        self.username = username
+        self.ipAddress = ipAddress
     }
 }

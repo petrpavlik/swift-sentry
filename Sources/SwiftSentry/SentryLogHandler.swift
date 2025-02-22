@@ -37,9 +37,17 @@ public struct SentryLogHandler: LogHandler {
         line: UInt
     ) {
 
-        let metadataEscaped = (metadata ?? [:])
+        var metadataEscaped = (metadata ?? [:])
             .merging(self.metadata, uniquingKeysWith: { a, _ in a })
             .merging(self.metadataProvider?.get() ?? [:], uniquingKeysWith: { (a, _) in a })
+
+        var user: User?
+
+        if case let .string(sentryUserJson) = metadataEscaped["sentryUserJSON"] {
+            user = try? JSONDecoder().decode(
+                User.self, from: sentryUserJson.data(using: .utf8) ?? Data())
+            metadataEscaped["sentryUserJSON"] = nil
+        }
 
         let tags = metadataEscaped.mapValues { "\($0)" }
 
@@ -88,6 +96,7 @@ public struct SentryLogHandler: LogHandler {
                     logger: source,
                     transaction: metadataEscaped["transaction"]?.description,
                     tags: tags.isEmpty ? nil : tags,
+                    user: user,
                     file: file,
                     filePath: nil,
                     function: function,

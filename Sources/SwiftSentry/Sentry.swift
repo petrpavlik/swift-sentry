@@ -1,6 +1,8 @@
 import AsyncHTTPClient
 import Foundation
+import Logging
 import NIO
+import NIOConcurrencyHelpers
 import NIOFoundationCompat
 
 private actor RateLimiter {
@@ -31,7 +33,6 @@ public final class Sentry: Sendable {
 
     private let dsn: Dsn
     private let httpClient: HTTPClient
-    private let isUsingCustomHttpClient: Bool
     internal let servername: String?
     internal let release: String?
     internal let environment: String?
@@ -52,10 +53,18 @@ public final class Sentry: Sendable {
     private let sampleRate: Double
 
     private let rateLimiter = RateLimiter()
+    private let logger = Logger(
+        label: "swift-sentry", factory: StreamLogHandler.standardOutput(label:))
+
+    private let _numRunningUploadTasks: NIOLockedValueBox<Int> = .init(0)
+    private var numRunningUploadTasks: Int {
+        get { _numRunningUploadTasks.withLockedValue { $0 } }
+        set { _numRunningUploadTasks.withLockedValue { $0 = newValue } }
+    }
 
     public init(
         dsn: String,
-        httpClient: HTTPClient? = nil,
+        httpClient: HTTPClient = .shared,
         servername: String? = getHostname(),
         release: String? = nil,
         environment: String? = nil,
@@ -75,22 +84,29 @@ public final class Sentry: Sendable {
         }
         self.sampleRate = sampleRate
 
-        if let httpClient {
-            self.httpClient = httpClient
-            self.isUsingCustomHttpClient = true
-        } else {
-            self.httpClient = HTTPClient(eventLoopGroupProvider: .singleton)
-            self.isUsingCustomHttpClient = false
-        }
+        self.httpClient = httpClient
 
         self.servername = servername
         self.release = release
         self.environment = environment
     }
 
-    public func shutdown() async throws {
-        if isUsingCustomHttpClient == false {
-            try await httpClient.shutdown()
+    public func flush(timeout: TimeInterval = 2) async throws {
+
+        if numRunningUploadTasks > 0 && timeout > 0 {
+            logger.info(
+                "Waiting for \(numRunningUploadTasks) upload tasks to finish for up to \(timeout) seconds"
+            )
+            let deadline = Date().addingTimeInterval(timeout)
+            do {
+                while numRunningUploadTasks > 0 && Date() < deadline {
+                    // Not so sure about this, but sleep will always just throw when the task is cancelled AFAIK.
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+            } catch {
+                logger.error("Failed to wait for upload tasks to finish: \(error)")
+            }
+
         }
     }
 
@@ -108,7 +124,7 @@ public final class Sentry: Sendable {
     }
 
     @discardableResult
-    public func capture(error: Error) async throws -> UUID? {
+    public func capture(error: Error, user: User? = nil) async throws -> UUID? {
         let edb = ExceptionDataBag(
             type: error.localizedDescription,
             value: nil,
@@ -130,7 +146,7 @@ public final class Sentry: Sendable {
             message: .raw(message: "\(error.localizedDescription)"),
             exception: exceptions,
             breadcrumbs: nil,
-            user: nil
+            user: user
         )
 
         return try await send(event: event)
@@ -144,6 +160,7 @@ public final class Sentry: Sendable {
         logger: String? = nil,
         transaction: String? = nil,
         tags: [String: String]? = nil,
+        user: User? = nil,
         file: String? = #file,
         filePath: String? = #filePath,
         function: String? = #function,
@@ -170,7 +187,7 @@ public final class Sentry: Sendable {
                 ExceptionDataBag(type: message, value: nil, stacktrace: stacktrace)
             ]),
             breadcrumbs: nil,
-            user: nil
+            user: user
         )
 
         return try await send(event: event)
@@ -216,11 +233,18 @@ public final class Sentry: Sendable {
     @discardableResult
     internal func send(event: Event) async throws -> UUID? {
 
+        numRunningUploadTasks += 1
+        defer {
+            numRunningUploadTasks -= 1
+        }
+
         guard await rateLimiter.isRateLimited() == false else {
+            logger.debug("Skipping event due to rate limiting")
             return nil
         }
 
         if sampleRate < 1.0 && Double.random(in: 0.0...1.0) > sampleRate {
+            logger.debug("Skipping event due to sample rate setting")
             return nil
         }
 
@@ -228,6 +252,7 @@ public final class Sentry: Sendable {
 
         if let beforeSend {
             guard let newEvent = beforeSend(event) else {
+                logger.debug("Skipping event due to beforeSend callback returning nil")
                 return nil
             }
             event = newEvent
@@ -263,11 +288,18 @@ public final class Sentry: Sendable {
     @discardableResult
     internal func send(envelope: Envelope) async throws -> UUID? {
 
+        numRunningUploadTasks += 1
+        defer {
+            numRunningUploadTasks -= 1
+        }
+
         guard await rateLimiter.isRateLimited() == false else {
+            logger.debug("Skipping event due to rate limiting")
             return nil
         }
 
         if sampleRate < 1.0 && Double.random(in: 0.0...1.0) > sampleRate {
+            logger.debug("Skipping event due to sample rate setting")
             return nil
         }
 
@@ -305,9 +337,11 @@ public final class Sentry: Sendable {
                 let retryAfterInterval = TimeInterval(retryAfter)
             {
                 await rateLimiter.rateLimit(until: Date().addingTimeInterval(retryAfterInterval))
+                logger.debug("Rate limited for \(retryAfterInterval) seconds")
             } else {
                 // On 429 responses without the above headers, assume a 60s rate limit for all categories
                 await rateLimiter.rateLimit(until: Date().addingTimeInterval(60))
+                logger.debug("Rate limited for 60 seconds")
             }
         }
     }
