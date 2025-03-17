@@ -37,73 +37,69 @@ public struct SentryLogHandler: LogHandler {
         line: UInt
     ) {
 
-        var metadataEscaped = (metadata ?? [:])
+        let metadataEscaped = (metadata ?? [:])
             .merging(self.metadata, uniquingKeysWith: { a, _ in a })
             .merging(self.metadataProvider?.get() ?? [:], uniquingKeysWith: { (a, _) in a })
 
-        var user: User?
-
-        if case let .string(sentryUserJson) = metadataEscaped["sentryUserJSON"] {
-            user = try? JSONDecoder().decode(
-                User.self, from: sentryUserJson.data(using: .utf8) ?? Data())
-            metadataEscaped["sentryUserJSON"] = nil
-        }
-
         let tags = metadataEscaped.mapValues { "\($0)" }
 
-        if let attachment = evalMetadata(metadata: metadataEscaped, attachmentKey: attachmentKey) {
+        // let attachment = evalMetadata(metadata: metadataEscaped, attachmentKey: attachmentKey)
 
-            let uid = UUID()
+        let uid = UUID()
 
-            do {
-                let eventData = try makeEventData(
-                    message: message.description,
-                    level: Level(from: level),
-                    uid: uid,
-                    servername: sentry.servername,
-                    release: sentry.release,
-                    environment: sentry.environment,
-                    logger: source,
-                    transaction: metadataEscaped["transaction"]?.description,
-                    tags: tags.isEmpty ? nil : tags,
-                    file: file,
-                    function: function,
-                    line: Int(line)
-                )
-                let envelope: Envelope = .init(
-                    header: .init(eventId: uid, dsn: nil, sdk: nil),
-                    items: [
-                        .init(
-                            header: .init(
-                                type: "event", filename: nil, contentType: "application/json"),
-                            data: eventData
-                        ),
-                        try? attachment.toEnvelopeItem(maxAttachmentSize: sentry.maxAttachmentSize),
-                    ].compactMap { $0 }
-                )
+        let event = makeEvent(
+            message: message.description,
+            level: Level(from: level),
+            uid: uid,
+            servername: sentry.servername,
+            release: sentry.release,
+            environment: sentry.environment,
+            logger: source,
+            transaction: metadataEscaped["transaction"]?.description,
+            tags: tags.isEmpty ? nil : tags,
+            file: file,
+            function: function,
+            line: Int(line)
+        )
 
-                Task {
-                    try await sentry.capture(envelope: envelope)
-                }
+        sentry.capture(event: event)
 
-                return
-            } catch {}
-        } else {
-            Task {
-                try await sentry.capture(
-                    message: message.description,
-                    level: Level(from: level),
-                    logger: source,
-                    transaction: metadataEscaped["transaction"]?.description,
-                    tags: tags.isEmpty ? nil : tags,
-                    user: user,
-                    file: file,
-                    filePath: nil,
-                    function: function,
-                    line: Int(line),
-                    column: nil
-                )
-            }
-        }
+        // do {
+        //     let event = makeEvent(
+        //         message: message.description,
+        //         level: Level(from: level),
+        //         uid: uid,
+        //         servername: sentry.servername,
+        //         release: sentry.release,
+        //         environment: sentry.environment,
+        //         logger: source,
+        //         transaction: metadataEscaped["transaction"]?.description,
+        //         tags: tags.isEmpty ? nil : tags,
+        //         file: file,
+        //         function: function,
+        //         line: Int(line)
+        //     )
+        //     sentry.capture(event: event)
+        //     // let envelope: Envelope = .init(
+        //     //     header: .init(eventId: uid, dsn: nil, sdk: nil),
+        //     //     items: [
+        //     //         .init(
+        //     //             header: .init(
+        //     //                 type: "event", filename: nil, contentType: "application/json"),
+        //     //             data: eventData
+        //     //         ),
+        //     //         try? attachment?.toEnvelopeItem(maxAttachmentSize: sentry.maxAttachmentSize),
+        //     //     ].compactMap { $0 }
+        //     // )
+
+        //     Task {
+        //         try await sentry.capture(envelope: envelope)
+        //     }
+
+        //     return
+        // } catch {
+
+        // }
+
     }
 }

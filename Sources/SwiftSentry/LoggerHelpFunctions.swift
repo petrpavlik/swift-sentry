@@ -15,8 +15,7 @@ public func evalMetadata(metadata: Logger.Metadata, attachmentKey: String?) -> A
     return nil
 }
 
-/// Construct an Envent, encode it to JSONData, return that data
-public func makeEventData(
+public func makeEvent(
     message: String,
     level: Level,
     uid: UUID,
@@ -31,7 +30,7 @@ public func makeEventData(
     file: String? = #file,
     function: String? = #function,
     line: Int? = #line
-) throws -> Data {
+) -> Event {
     let frame = Frame(
         filename: file,
         function: function,
@@ -42,23 +41,21 @@ public func makeEventData(
         instruction_addr: nil
     )
     let stacktrace = Stacktrace(frames: [frame])
-    return try JSONEncoder().encode(
-        Event(
-            event_id: uid,
-            timestamp: Date().timeIntervalSince1970,
-            level: level,
-            logger: logger,
-            transaction: transaction,
-            server_name: servername,
-            release: release,
-            tags: tags,
-            environment: environment,
-            message: .raw(message: message),
-            exception: Exceptions(values: [
-                ExceptionDataBag(type: message, value: nil, stacktrace: stacktrace)
-            ]),
-            breadcrumbs: nil,
-            user: user
-        )
+    return Event(
+        event_id: uid,
+        timestamp: Date().timeIntervalSince1970,
+        level: level,
+        logger: logger,
+        transaction: transaction,
+        server_name: servername,
+        release: release,
+        tags: tags,
+        environment: environment,
+        message: .raw(message: message),
+        exception: Exceptions(values: [
+            ExceptionDataBag(type: message, value: nil, stacktrace: stacktrace)
+        ]),
+        breadcrumbs: nil,
+        user: user
     )
 }
